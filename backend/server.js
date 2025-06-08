@@ -3,11 +3,12 @@ const multer = require('multer');
 const cors = require('cors');
 const fs = require('fs');
 const pdfParse = require('pdf-parse');
-const XLSX = require('xlsx');
 const csvParser = require('csv-parser');
 const { parsePhoneNumberFromString } = require('libphonenumber-js');
 const path = require('path');
 const moment = require('moment');
+const ExcelJS = require('exceljs');
+const mammoth = require('mammoth');
 
 const app = express();
 const PORT = 5000;
@@ -15,7 +16,6 @@ const PORT = 5000;
 app.use(cors());
 app.use(express.json());
 
-// Ensure uploads dir exists
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir);
@@ -23,45 +23,23 @@ if (!fs.existsSync(uploadsDir)) {
 
 const upload = multer({ dest: uploadsDir });
 
-// === Helper: Map phone type ===
+// === Better Phone Regex ===
+const phoneRegex = /(\+?[1-9]{1}[0-9\s().\-]{7,})/g;
+
 function mapPhoneType(type) {
   switch (type) {
-    case 'MOBILE':
-      return 'CELL PHONE';
-    case 'FIXED_LINE':
-      return 'LANDLINE';
-    case 'FIXED_LINE_OR_MOBILE':
-      return 'LANDLINE or CELL PHONE';
-    case 'VOIP':
-      return 'VOIP';
-    case 'TOLL_FREE':
-      return 'TOLL FREE';
-    case 'PREMIUM_RATE':
-      return 'PREMIUM RATE';
-    case 'SHARED_COST':
-      return 'SHARED COST';
-    case 'PERSONAL_NUMBER':
-      return 'PERSONAL NUMBER';
-    case 'PAGER':
-      return 'PAGER';
-    case 'UAN':
-      return 'UAN';
-    case 'VOICEMAIL':
-      return 'VOICEMAIL';
-    default:
-      return 'N/A';
+    case 'MOBILE': return 'CELL PHONE';
+    case 'FIXED_LINE': return 'LANDLINE';
+    case 'FIXED_LINE_OR_MOBILE': return 'LANDLINE or CELL PHONE';
+    case 'VOIP': return 'VOIP';
+    case 'TOLL_FREE': return 'TOLL FREE';
+    default: return 'N/A';
   }
 }
 
-// === Improved Phone Regex ===
-const phoneRegex = /(\+?1\s*(?:[.-]\s*)?)?(\(?\d{3}\)?|\d{3})(\s*[.-]?\s*)(\d{3})(\s*[.-]?\s*)(\d{4})/g;
-
-// === Build result object ===
 function buildPhoneReport(numberStr) {
   try {
-    // Parse phone number WITHOUT forcing country
-    const phoneNumber = parsePhoneNumberFromString(numberStr);
-
+    const phoneNumber = parsePhoneNumberFromString(numberStr, 'US'); 
     if (phoneNumber && phoneNumber.isValid()) {
       return {
         input: numberStr.trim(),
@@ -91,7 +69,6 @@ function buildPhoneReport(numberStr) {
   }
 }
 
-// === /api/validate-phone ===
 app.post('/api/validate-phone', (req, res) => {
   try {
     const { phone } = req.body;
@@ -103,24 +80,12 @@ app.post('/api/validate-phone', (req, res) => {
   }
 });
 
-// === /api/upload-file ===
 app.post('/api/upload-file', upload.single('file'), async (req, res) => {
   const file = req.file;
+  let results = [];
 
   try {
-    let results = [];
-
-    if (file.mimetype === 'application/pdf') {
-      const dataBuffer = fs.readFileSync(file.path);
-      const data = await pdfParse(dataBuffer);
-      const textContent = data.text;
-
-      const foundNumbers = textContent.match(phoneRegex) || [];
-
-      results = foundNumbers.map(num => buildPhoneReport(num));
-    }
-
-    else if (file.mimetype === 'text/csv') {
+    if (file.mimetype === 'text/csv') {
       await new Promise((resolve, reject) => {
         fs.createReadStream(file.path)
           .pipe(csvParser())
@@ -141,21 +106,38 @@ app.post('/api/upload-file', upload.single('file'), async (req, res) => {
     }
 
     else if (file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') {
-      const workbook = XLSX.readFile(file.path);
-      const sheetName = workbook.SheetNames[0];
-      const sheet = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName]);
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.readFile(file.path);
 
-      sheet.forEach((row) => {
-        for (const key in row) {
-          const value = row[key];
-          const foundNumbers = value ? value.match(phoneRegex) : [];
-          if (foundNumbers) {
+      for (const worksheet of workbook.worksheets) {
+        worksheet.eachRow((row) => {
+          row.eachCell((cell) => {
+            const value = String(cell.value || '');
+            const foundNumbers = value.match(phoneRegex) || [];
             foundNumbers.forEach(num => {
               results.push(buildPhoneReport(num));
             });
-          }
-        }
-      });
+          });
+        });
+      }
+    }
+
+    else if (file.mimetype === 'application/pdf') {
+      const dataBuffer = fs.readFileSync(file.path);
+      const data = await pdfParse(dataBuffer);
+      const textContent = data.text;
+      const foundNumbers = textContent.match(phoneRegex) || [];
+
+      results = foundNumbers.map(num => buildPhoneReport(num));
+    }
+
+    // === DOCX ===
+    else if (file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+      const data = await mammoth.extractRawText({ path: file.path });
+      const textContent = data.value;
+      const foundNumbers = textContent.match(phoneRegex) || [];
+
+      results = foundNumbers.map(num => buildPhoneReport(num));
     }
 
     else {
@@ -168,7 +150,6 @@ app.post('/api/upload-file', upload.single('file'), async (req, res) => {
     console.error('/api/upload-file error:', error.message);
     res.status(500).json({ error: 'Failed to process file' });
   } finally {
-    // Cleanup file safely
     if (file && file.path && fs.existsSync(file.path)) {
       fs.unlinkSync(file.path);
     }
@@ -177,5 +158,5 @@ app.post('/api/upload-file', upload.single('file'), async (req, res) => {
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(` Server running on port ${PORT}`);
 });
