@@ -49,31 +49,57 @@ function mapPhoneType(type) {
     case 'VOICEMAIL':
       return 'VOICEMAIL';
     default:
-      return 'UNKNOWN';
+      return 'N/A';
+  }
+}
+
+// === Improved Phone Regex ===
+const phoneRegex = /(\+?1\s*(?:[.-]\s*)?)?(\(?\d{3}\)?|\d{3})(\s*[.-]?\s*)(\d{3})(\s*[.-]?\s*)(\d{4})/g;
+
+// === Build result object ===
+function buildPhoneReport(numberStr) {
+  try {
+    // Parse phone number WITHOUT forcing country
+    const phoneNumber = parsePhoneNumberFromString(numberStr);
+
+    if (phoneNumber && phoneNumber.isValid()) {
+      return {
+        input: numberStr.trim(),
+        valid: true,
+        report: {
+          "Phone Number": phoneNumber.formatNational() || 'N/A',
+          "Date of this Report": moment().format("MMMM DD, YYYY"),
+          "Phone Line Type": mapPhoneType(phoneNumber.getType()),
+          "Country": phoneNumber.country || 'N/A',
+          "Formatted": phoneNumber.formatInternational() || 'N/A'
+        }
+      };
+    } else {
+      return {
+        input: numberStr.trim(),
+        valid: false,
+        report: null
+      };
+    }
+  } catch (error) {
+    console.error('Error parsing phone number:', numberStr, error.message);
+    return {
+      input: numberStr.trim(),
+      valid: false,
+      report: null
+    };
   }
 }
 
 // === /api/validate-phone ===
 app.post('/api/validate-phone', (req, res) => {
-  const { phone } = req.body;
-  const phoneNumber = parsePhoneNumberFromString(phone, 'US');
-
-  if (phoneNumber && phoneNumber.isValid()) {
-    const rawType = phoneNumber.getType();
-    const mappedType = mapPhoneType(rawType);
-
-    res.json({
-      valid: true,
-      report: {
-        "Phone Number": phoneNumber.formatNational(),
-        "Date of this Report": moment().format("MMMM DD, YYYY"),
-        "Phone Line Type": mappedType,
-        "Country": phoneNumber.country,
-        "Formatted": phoneNumber.formatInternational()
-      }
-    });
-  } else {
-    res.json({ valid: false, report: null });
+  try {
+    const { phone } = req.body;
+    const result = buildPhoneReport(phone);
+    res.json(result);
+  } catch (error) {
+    console.error('/api/validate-phone error:', error.message);
+    res.status(500).json({ error: 'Failed to validate phone' });
   }
 });
 
@@ -89,31 +115,9 @@ app.post('/api/upload-file', upload.single('file'), async (req, res) => {
       const data = await pdfParse(dataBuffer);
       const textContent = data.text;
 
-      const phoneRegex = /(\+?\d[\d\s\-().]{7,}\d)/g;
       const foundNumbers = textContent.match(phoneRegex) || [];
 
-      results = foundNumbers.map((num) => {
-        const phoneNumber = parsePhoneNumberFromString(num, 'US');
-        if (phoneNumber && phoneNumber.isValid()) {
-          return {
-            input: num.trim(),
-            valid: true,
-            report: {
-              "Phone Number": phoneNumber.formatNational(),
-              "Date of this Report": moment().format("MMMM DD, YYYY"),
-              "Phone Line Type": mapPhoneType(phoneNumber.getType()),
-              "Country": phoneNumber.country,
-              "Formatted": phoneNumber.formatInternational()
-            }
-          };
-        } else {
-          return {
-            input: num.trim(),
-            valid: false,
-            report: null
-          };
-        }
-      });
+      results = foundNumbers.map(num => buildPhoneReport(num));
     }
 
     else if (file.mimetype === 'text/csv') {
@@ -123,30 +127,10 @@ app.post('/api/upload-file', upload.single('file'), async (req, res) => {
           .on('data', (row) => {
             for (const key in row) {
               const value = row[key];
-              const phoneRegex = /(\+?\d[\d\s\-().]{7,}\d)/g;
               const foundNumbers = value ? value.match(phoneRegex) : [];
               if (foundNumbers) {
-                foundNumbers.forEach((num) => {
-                  const phoneNumber = parsePhoneNumberFromString(num, 'US');
-                  if (phoneNumber && phoneNumber.isValid()) {
-                    results.push({
-                      input: num.trim(),
-                      valid: true,
-                      report: {
-                        "Phone Number": phoneNumber.formatNational(),
-                        "Date of this Report": moment().format("MMMM DD, YYYY"),
-                        "Phone Line Type": mapPhoneType(phoneNumber.getType()),
-                        "Country": phoneNumber.country,
-                        "Formatted": phoneNumber.formatInternational()
-                      }
-                    });
-                  } else {
-                    results.push({
-                      input: num.trim(),
-                      valid: false,
-                      report: null
-                    });
-                  }
+                foundNumbers.forEach(num => {
+                  results.push(buildPhoneReport(num));
                 });
               }
             }
@@ -164,30 +148,10 @@ app.post('/api/upload-file', upload.single('file'), async (req, res) => {
       sheet.forEach((row) => {
         for (const key in row) {
           const value = row[key];
-          const phoneRegex = /(\+?\d[\d\s\-().]{7,}\d)/g;
           const foundNumbers = value ? value.match(phoneRegex) : [];
           if (foundNumbers) {
-            foundNumbers.forEach((num) => {
-              const phoneNumber = parsePhoneNumberFromString(num, 'US');
-              if (phoneNumber && phoneNumber.isValid()) {
-                results.push({
-                  input: num.trim(),
-                  valid: true,
-                  report: {
-                    "Phone Number": phoneNumber.formatNational(),
-                    "Date of this Report": moment().format("MMMM DD, YYYY"),
-                    "Phone Line Type": mapPhoneType(phoneNumber.getType()),
-                    "Country": phoneNumber.country,
-                    "Formatted": phoneNumber.formatInternational()
-                  }
-                });
-              } else {
-                results.push({
-                  input: num.trim(),
-                  valid: false,
-                  report: null
-                });
-              }
+            foundNumbers.forEach(num => {
+              results.push(buildPhoneReport(num));
             });
           }
         }
@@ -201,11 +165,11 @@ app.post('/api/upload-file', upload.single('file'), async (req, res) => {
     res.json({ count: results.length, results });
 
   } catch (error) {
-    console.error('Error processing file:', error);
+    console.error('/api/upload-file error:', error.message);
     res.status(500).json({ error: 'Failed to process file' });
   } finally {
-    // Cleanup
-    if (fs.existsSync(file.path)) {
+    // Cleanup file safely
+    if (file && file.path && fs.existsSync(file.path)) {
       fs.unlinkSync(file.path);
     }
   }
