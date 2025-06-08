@@ -10,14 +10,14 @@ function FileUpload({ onUpload }) {
 
   const { getRootProps, getInputProps } = useDropzone({
     onDrop,
-    accept: ['.pdf', '.docx', '.csv', '.xlsx'],
+    accept: ['.csv', '.xlsx'],
     multiple: false,
   });
 
   return (
-    <div {...getRootProps()} className="dropzone">
+    <div {...getRootProps()} className="border border-primary p-4 mb-3 text-center rounded">
       <input {...getInputProps()} />
-      <p>📂 Drag & drop a file here, or click to select (PDF, DOCX, CSV, XLSX)</p>
+      <p>📂 Drag & drop CSV or XLSX file here, or click to select</p>
     </div>
   );
 }
